@@ -29,7 +29,9 @@ const OSRM_MIN_GAP_MS = 1100 // <= 1 req/s
 //   * No bulk geocoding — we only run interactive hydration at mount time.
 //   * Aggressive caching (7-day TTL in-memory + persisted in localStorage).
 // ---------------------------------------------------------------------------
-const NOMINATIM_BASE = import.meta.env.VITE_NOMINATIM_BASE || 'https://nominatim.openstreetmap.org'
+// Default is our same-origin Traefik proxy at /_proxy/nominatim — sidesteps
+// CORS and lets us inject a proper User-Agent on the server side.
+const NOMINATIM_BASE = import.meta.env.VITE_NOMINATIM_BASE || '/_proxy/nominatim'
 const NOMINATIM_USER_AGENT = 'palantir-trip-command/1.0 (self-hosted pLim deployment)'
 const NOMINATIM_MIN_GAP_MS = 1100 // respect 1 req/s policy with a 100 ms margin
 const NOMINATIM_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
@@ -2035,29 +2037,12 @@ export default function CommandMap({
       const cameraAnimationAlpha = 1 - Math.exp(-deltaSeconds * 2.7)
       const map = mapRef.current
 
-      // Animated polyline dash offset — MapLibre doesn't expose a scalar
-      // line-offset animation like Google SymbolPath, so we emulate a
-      // travelling dash effect by cycling line-dasharray phases.
-      if (map) {
-        routeEntriesRef.current.forEach((entry) => {
-          if (!entry.visible) return
-          if (!map.getLayer(entry.animLayerId)) return
-          if (!entry.shouldAnimate) return
-          const distancePercent = (deltaSeconds / entry.loopDurationSeconds) * 100
-          entry.dashOffset = (entry.dashOffset + distancePercent) % 100
-          const phase = entry.dashOffset / 100
-          // A two-value dash pattern whose proportions cycle to give the
-          // illusion of travel.
-          const a = 1 + phase * 2
-          const b = 2 + (1 - phase) * 2
-          try {
-            map.setPaintProperty(entry.animLayerId, 'line-dasharray', [a, b])
-          } catch {
-            // TODO: MapLibre animation parity — some styles may not allow
-            // setPaintProperty at high frequency; degrade silently.
-          }
-        })
-      }
+      // Route dash animation disabled — MapLibre's setPaintProperty('line-dasharray')
+      // at frame rate exhausts the internal LineAtlas (256 slots) and eventually
+      // triggers "Cannot read properties of null (reading 'y')" in
+      // setConstantDashPositions. Static dash pattern from layer init is kept.
+      // If a travelling effect is desired, the correct approach is a second
+      // layer with a custom `line-gradient` driven by line-progress.
 
       vehicleEntriesRef.current.forEach((entry) => {
         if (!entry.radarElement) return
