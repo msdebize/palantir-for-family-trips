@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
 import {
   ArrowRight,
   CarFront,
@@ -36,7 +35,7 @@ import CommandMap from './CommandMap'
 import InspectorRail from './InspectorRail'
 import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
 import { usePersistedTripState } from './usePersistedTripState'
-import { DAYS, NAV_ITEMS, TIME_SLOTS, TRIP_META } from './tripData'
+import { DAYS, INITIAL_FAMILIES, NAV_ITEMS, TIME_SLOTS, TRIP_META } from './tripData'
 import {
   ENTITY_PAGE,
   ensureSelectionForPage,
@@ -69,10 +68,7 @@ import {
 } from './tripModel'
 import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeather } from './weather'
 
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID
-const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = import.meta.env.VITE_DISABLE_LEGACY_GOOGLE_ROUTING === 'true'
-const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = Boolean(import.meta.env?.DEV)
+// Google Maps constants removed — enrichment disabled; map migrated to MapLibre+OSRM.
 
 function cn(...inputs) {
   return twMerge(clsx(inputs))
@@ -829,6 +825,8 @@ function AppShell({
   doc,
   onSetSelectedPage,
   onExport,
+  onOpenChat,
+  onOpenSettings,
   onSearchChange,
   searchResults,
   onOpenEntity,
@@ -879,6 +877,7 @@ function AppShell({
           </button>
           <button
             type="button"
+            onClick={onOpenChat}
             className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
             title="Messages"
           >
@@ -886,6 +885,7 @@ function AppShell({
           </button>
           <button
             type="button"
+            onClick={onOpenSettings}
             className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
             title="Settings"
           >
@@ -1010,35 +1010,470 @@ function AppShell({
   )
 }
 
+// Merge live doc.families with INITIAL_FAMILIES entries (by id) so the roster
+// picks up the `vehicles[]` structure from tripData.js plus any placeholder
+// family (e.g. Santos) that is not yet present in the persisted doc. Live doc
+// fields always win; only `vehicles` and placeholder families are injected.
+function mergeFamiliesForRoster(liveFamilies) {
+  const byId = new Map(liveFamilies.map((family) => [family.id, family]))
+  INITIAL_FAMILIES.forEach((seed) => {
+    const live = byId.get(seed.id)
+    if (live) {
+      byId.set(seed.id, {
+        ...live,
+        vehicles: live.vehicles || seed.vehicles || null,
+      })
+    } else {
+      byId.set(seed.id, {
+        ...seed,
+        title: seed.title || seed.name,
+        placeholder: true,
+      })
+    }
+  })
+  return Array.from(byId.values())
+}
+
 function FamilyList({ doc, selection, onSelectEntity }) {
+  const [expandedVehicles, setExpandedVehicles] = useState({})
+  const roster = mergeFamiliesForRoster(doc.families)
+  const toggleVehicles = (id) => {
+    setExpandedVehicles((prev) => ({ ...prev, [id]: !prev[id] }))
+  }
   return (
     <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-      {doc.families.map((family) => {
+      {roster.map((family) => {
         const selected = selection.type === 'family' && selection.id === family.id
+        const hasVehicles = Array.isArray(family.vehicles) && family.vehicles.length > 0
+        const expanded = !!expandedVehicles[family.id]
         return (
-          <button
+          <div
             key={family.id}
-            type="button"
-            onClick={() => onSelectEntity('family', family.id)}
             className={cn(
-              'flex w-full items-start justify-between gap-3 border-b border-[#30363D]/50 px-4 py-3 text-left last:border-b-0',
-              selected ? 'bg-[#24313d] shadow-[inset_4px_0_0_#58A6FF]' : 'hover:bg-[#1f2a34]/60',
+              'border-b border-[#30363D]/50 last:border-b-0',
+              selected ? 'bg-[#24313d] shadow-[inset_4px_0_0_#58A6FF]' : '',
             )}
           >
-            <div>
-              <div className="mb-1 text-[11px] font-bold uppercase tracking-widest text-[#C9D1D9]">
-                {family.title}
+            <button
+              type="button"
+              onClick={() => !family.placeholder && onSelectEntity('family', family.id)}
+              disabled={family.placeholder}
+              className={cn(
+                'flex w-full items-start justify-between gap-3 px-4 py-3 text-left',
+                family.placeholder
+                  ? 'cursor-default opacity-75'
+                  : selected
+                    ? ''
+                    : 'hover:bg-[#1f2a34]/60',
+              )}
+            >
+              <div>
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-widest text-[#C9D1D9]">
+                    {family.title}
+                  </span>
+                  {family.placeholder ? (
+                    <span className="border border-[#30363D] bg-[#0d1117] px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-[#8B949E]">
+                      Placeholder
+                    </span>
+                  ) : null}
+                </div>
+                <div className="text-[10px] font-medium text-[#8B949E]">
+                  {family.shortOrigin} inbound, {family.headcount}
+                </div>
+                {family.responsibility ? (
+                  <div className="mt-1 text-[10px] text-[#8B949E]">
+                    {family.responsibility}
+                  </div>
+                ) : null}
               </div>
-              <div className="text-[10px] font-medium text-[#8B949E]">
-                {family.shortOrigin} inbound, {family.headcount}
-              </div>
+              <StatusPill tone={family.status}>{family.status}</StatusPill>
+            </button>
+            <div className="border-t border-[#30363D]/30 px-4 pb-3 pt-2">
+              {hasVehicles ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => toggleVehicles(family.id)}
+                    className="flex w-full items-center justify-between text-[9px] font-black uppercase tracking-widest text-[#58A6FF] hover:text-[#C9D1D9]"
+                  >
+                    <span>
+                      Vehicles ({family.vehicles.length})
+                    </span>
+                    <span className="font-mono text-[10px]">{expanded ? '[-]' : '[+]'}</span>
+                  </button>
+                  {expanded ? (
+                    <ul className="mt-2 space-y-1 font-mono text-[10px] text-[#C9D1D9]">
+                      {family.vehicles.map((vehicle) => (
+                        <li
+                          key={vehicle.id}
+                          className="border border-[#30363D]/50 bg-[#0d1117] px-2 py-1.5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-[#C9D1D9]">{vehicle.name}</span>
+                            <span className="text-[#8B949E]">{vehicle.seats} seats</span>
+                          </div>
+                          <div className="mt-0.5 flex items-center justify-between text-[#8B949E]">
+                            <span>drv: {vehicle.driver}</span>
+                            <span>{vehicle.departureWindow}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </>
+              ) : family.vehicle ? (
+                <div className="text-[10px] font-mono text-[#8B949E]">
+                  Vehicle: {family.vehicle}
+                </div>
+              ) : null}
             </div>
-            <StatusPill tone={family.status}>{family.status}</StatusPill>
-          </button>
+          </div>
         )
       })}
     </div>
   )
+}
+
+function SettingsDialog({ open, onClose }) {
+  const dialogRef = useRef(null)
+  const [settings, setSettings] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_TRIP_SETTINGS
+    try {
+      const raw = window.localStorage.getItem(TRIP_SETTINGS_STORAGE_KEY)
+      if (!raw) return DEFAULT_TRIP_SETTINGS
+      return { ...DEFAULT_TRIP_SETTINGS, ...JSON.parse(raw) }
+    } catch {
+      return DEFAULT_TRIP_SETTINGS
+    }
+  })
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    if (open && !dialog.open) {
+      dialog.showModal()
+    } else if (!open && dialog.open) {
+      dialog.close()
+    }
+  }, [open])
+
+  const persist = useCallback((next) => {
+    setSettings(next)
+    try {
+      window.localStorage.setItem(TRIP_SETTINGS_STORAGE_KEY, JSON.stringify(next))
+    } catch {
+      // swallow
+    }
+  }, [])
+
+  const handleResetState = () => {
+    if (typeof window === 'undefined') return
+    const ok = window.confirm('This will clear all persisted trip state and reload. Continue?')
+    if (!ok) return
+    try {
+      window.localStorage.clear()
+    } catch {
+      // ignore
+    }
+    window.location.reload()
+  }
+
+  return (
+    <dialog
+      ref={dialogRef}
+      onClose={onClose}
+      onCancel={onClose}
+      className="w-[480px] border border-[#30363D] bg-[#161b22] p-0 text-[#C9D1D9] backdrop:bg-[#0b0f14]/75 backdrop:backdrop-blur-sm"
+    >
+      <div className="flex items-center justify-between border-b border-[#30363D] px-5 py-3">
+        <div>
+          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-[#58A6FF]">
+            Trip Command
+          </div>
+          <div className="text-[13px] font-black uppercase tracking-[0.08em] text-[#E6EDF3]">
+            Settings
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="border border-[#30363D] bg-[#0d1117] p-1.5 text-[#8B949E] hover:border-[#58A6FF]/40 hover:text-[#C9D1D9]"
+          title="Close"
+        >
+          <X size={14} strokeWidth={1.8} />
+        </button>
+      </div>
+
+      <div className="space-y-4 px-5 py-4 font-mono text-[11px]">
+        <label className="flex items-center justify-between gap-4 border border-[#30363D]/50 bg-[#0d1117] px-3 py-2">
+          <span className="text-[#C9D1D9]">
+            Use live OSRM routing
+            <span className="mt-0.5 block text-[9px] font-sans tracking-wide text-[#8B949E]">
+              Overrides VITE_OSRM_BASE at runtime (reload to apply).
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.liveOsrm}
+            onChange={(event) => persist({ ...settings, liveOsrm: event.target.checked })}
+            className="h-4 w-4 accent-[#58A6FF]"
+          />
+        </label>
+
+        <label className="flex items-center justify-between gap-4 border border-[#30363D]/50 bg-[#0d1117] px-3 py-2">
+          <span className="text-[#C9D1D9]">
+            Use Nominatim place search
+            <span className="mt-0.5 block text-[9px] font-sans tracking-wide text-[#8B949E]">
+              Future flag (wired up by another pass).
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.nominatim}
+            onChange={(event) => persist({ ...settings, nominatim: event.target.checked })}
+            className="h-4 w-4 accent-[#58A6FF]"
+          />
+        </label>
+
+        <label className="flex flex-col gap-2 border border-[#30363D]/50 bg-[#0d1117] px-3 py-2">
+          <span className="text-[#C9D1D9]">
+            Map style
+            <span className="mt-0.5 block text-[9px] font-sans tracking-wide text-[#8B949E]">
+              Applies on next map build.
+            </span>
+          </span>
+          <select
+            value={settings.mapStyle}
+            onChange={(event) => persist({ ...settings, mapStyle: event.target.value })}
+            className="border border-[#30363D] bg-[#0d1117] px-2 py-1.5 text-[11px] text-[#C9D1D9] focus:border-[#58A6FF] focus:outline-none"
+          >
+            <option value="liberty">liberty</option>
+            <option value="positron">positron</option>
+            <option value="bright">bright</option>
+            <option value="fiord">fiord</option>
+          </select>
+        </label>
+
+        <div className="flex flex-col gap-2 border border-[#F85149]/30 bg-[#0d1117] px-3 py-2">
+          <div className="text-[#C9D1D9]">
+            Reset persisted trip state
+            <span className="mt-0.5 block text-[9px] font-sans tracking-wide text-[#8B949E]">
+              Clears localStorage and reloads.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleResetState}
+            className="border border-[#F85149]/50 bg-[#F85149]/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-[#F85149] hover:bg-[#F85149]/20"
+          >
+            Reset & reload
+          </button>
+        </div>
+      </div>
+
+      <div className="flex justify-end border-t border-[#30363D] px-5 py-3">
+        <button
+          type="button"
+          onClick={onClose}
+          className="border border-[#30363D] bg-[#0d1117] px-4 py-1.5 text-[10px] font-black uppercase tracking-widest text-[#C9D1D9] hover:border-[#58A6FF]/40"
+        >
+          Close
+        </button>
+      </div>
+    </dialog>
+  )
+}
+
+function ChatDialog({ open, onClose }) {
+  const dialogRef = useRef(null)
+  const listRef = useRef(null)
+  const [author, setAuthor] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    try {
+      return window.localStorage.getItem(TRIP_CHAT_AUTHOR_STORAGE_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [messages, setMessages] = useState(() => {
+    if (typeof window === 'undefined') return []
+    try {
+      const raw = window.localStorage.getItem(TRIP_CHAT_STORAGE_KEY)
+      return raw ? JSON.parse(raw) : []
+    } catch {
+      return []
+    }
+  })
+  const [draft, setDraft] = useState('')
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    if (open && !dialog.open) {
+      dialog.showModal()
+    } else if (!open && dialog.open) {
+      dialog.close()
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    if (author) return
+    if (typeof window === 'undefined') return
+    const input = window.prompt('Your name for local chat?', '')
+    if (input && input.trim()) {
+      const trimmed = input.trim()
+      setAuthor(trimmed)
+      try {
+        window.localStorage.setItem(TRIP_CHAT_AUTHOR_STORAGE_KEY, trimmed)
+      } catch {
+        // ignore
+      }
+    }
+  }, [open, author])
+
+  useEffect(() => {
+    if (!open) return
+    const node = listRef.current
+    if (node) node.scrollTop = node.scrollHeight
+  }, [open, messages])
+
+  const persistMessages = (next) => {
+    setMessages(next)
+    try {
+      window.localStorage.setItem(TRIP_CHAT_STORAGE_KEY, JSON.stringify(next))
+    } catch {
+      // ignore
+    }
+  }
+
+  const handleSend = () => {
+    const text = draft.trim()
+    if (!text) return
+    const who = author || 'Anonymous'
+    const next = [
+      ...messages,
+      { id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, author: who, text, ts: Date.now() },
+    ]
+    persistMessages(next)
+    setDraft('')
+  }
+
+  const handleClear = () => {
+    if (typeof window === 'undefined') return
+    const ok = window.confirm('Clear all local chat messages?')
+    if (!ok) return
+    persistMessages([])
+  }
+
+  return (
+    <dialog
+      ref={dialogRef}
+      onClose={onClose}
+      onCancel={onClose}
+      className="w-[520px] border border-[#30363D] bg-[#161b22] p-0 text-[#C9D1D9] backdrop:bg-[#0b0f14]/75 backdrop:backdrop-blur-sm"
+    >
+      <div className="flex items-center justify-between border-b border-[#30363D] px-5 py-3">
+        <div>
+          <div className="text-[9px] font-black uppercase tracking-[0.22em] text-[#58A6FF]">
+            Trip Command
+          </div>
+          <div className="text-[13px] font-black uppercase tracking-[0.08em] text-[#E6EDF3]">
+            Chat
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="border border-[#30363D] bg-[#0d1117] p-1.5 text-[#8B949E] hover:border-[#58A6FF]/40 hover:text-[#C9D1D9]"
+          title="Close"
+        >
+          <X size={14} strokeWidth={1.8} />
+        </button>
+      </div>
+
+      <div className="border-b border-[#D29922]/30 bg-[#D29922]/10 px-5 py-2 text-[10px] text-[#D29922]">
+        Local-only chat. No sync between devices yet.
+      </div>
+
+      <div
+        ref={listRef}
+        className="h-[280px] overflow-y-auto bg-[#0d1117] px-5 py-3 font-mono text-[11px]"
+      >
+        {messages.length === 0 ? (
+          <div className="py-12 text-center text-[10px] text-[#8B949E]">
+            No messages yet. Leave a note for the next browser session.
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {messages.map((message) => {
+              const when = new Date(message.ts)
+              const stamp = Number.isNaN(when.getTime())
+                ? ''
+                : when.toLocaleString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+              return (
+                <li key={message.id} className="border border-[#30363D]/50 bg-[#161b22] px-2 py-1.5">
+                  <div className="flex items-center justify-between text-[9px] text-[#58A6FF]">
+                    <span className="font-black uppercase tracking-widest">{message.author}</span>
+                    <span className="text-[#8B949E]">{stamp}</span>
+                  </div>
+                  <div className="mt-1 whitespace-pre-wrap text-[11px] text-[#C9D1D9]">
+                    {message.text}
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-[#30363D] px-5 py-3">
+        <input
+          type="text"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              handleSend()
+            }
+          }}
+          placeholder={author ? `Message as ${author}` : 'Message...'}
+          className="flex-1 border border-[#30363D] bg-[#0d1117] px-3 py-1.5 font-mono text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
+        />
+        <button
+          type="button"
+          onClick={handleSend}
+          className="border border-[#58A6FF]/50 bg-[#58A6FF]/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-[#58A6FF] hover:bg-[#58A6FF]/20"
+        >
+          Send
+        </button>
+        <button
+          type="button"
+          onClick={handleClear}
+          className="border border-[#30363D] bg-[#0d1117] px-2 py-1.5 text-[10px] font-black uppercase tracking-widest text-[#8B949E] hover:border-[#F85149]/40 hover:text-[#F85149]"
+          title="Clear chat"
+        >
+          Clear
+        </button>
+      </div>
+    </dialog>
+  )
+}
+
+const TRIP_SETTINGS_STORAGE_KEY = 'tripCommandSettings'
+const TRIP_CHAT_STORAGE_KEY = 'tripCommandChat'
+const TRIP_CHAT_AUTHOR_STORAGE_KEY = 'tripCommandChatAuthor'
+const DEFAULT_TRIP_SETTINGS = {
+  liveOsrm: false,
+  nominatim: false,
+  mapStyle: 'liberty',
 }
 
 function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor }) {
@@ -3873,7 +4308,6 @@ function App() {
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
-  const locationIntelHydrationRef = useRef(new Set())
   const startupTimelineSyncRef = useRef(false)
   const seededPlanRefreshRef = useRef(false)
   const [weatherState, setWeatherState] = useState({
@@ -3882,6 +4316,8 @@ function App() {
     updatedAt: null,
     error: null,
   })
+  const [chatOpen, setChatOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const selection = displayDoc.selection
   const currentFamily = displayDoc.families.find((family) => family.id === viewerProfile?.familyId) || null
@@ -4268,211 +4704,13 @@ function App() {
     })
   }, [currentFamilyId, setDoc])
 
-  useEffect(() => {
-    if (!liveExternalData) return
-    if (!GOOGLE_MAPS_API_KEY) return
-
-    const basecampLocation = doc.locations.find((location) => location.id === 'pine-airbnb')
-    const pendingPlaceLocations = doc.locations.filter((location) => {
-      if (!location.placesQuery) return false
-
-      const needsPlaceMatch = location.placesQuery && !location.placeId
-      const needsPlaceDetails = location.placeId && !location.websiteUrl && !location.phoneNumber && !location.rating
-      const needsDriveProfile =
-        location.category === 'meal' &&
-        location.id !== 'pine-airbnb' &&
-        basecampLocation?.coordinates &&
-        !location.basecampDrive
-
-      return (needsPlaceMatch || needsPlaceDetails || needsDriveProfile) && !locationIntelHydrationRef.current.has(location.id)
-    })
-
-    if (!pendingPlaceLocations.length) return
-
-    let cancelled = false
-
-    async function hydrateMealIntel() {
-      try {
-        if (!window.__tripCommandCenterMapsConfigured) {
-          setOptions({
-            key: GOOGLE_MAPS_API_KEY,
-            version: 'weekly',
-            mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
-          })
-          window.__tripCommandCenterMapsConfigured = true
-        }
-
-        await importLibrary('maps')
-        await importLibrary('places')
-        const google = window.google
-        if (cancelled || !google) return
-
-        const placesContainer = document.createElement('div')
-        const placesService = SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV
-          ? null
-          : new google.maps.places.PlacesService(placesContainer)
-        const directionsService = SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV
-          ? null
-          : new google.maps.DirectionsService()
-
-        const findPlaceMatch = (location) =>
-          new Promise((resolve, reject) => {
-            if (!location.placesQuery || location.placeId) {
-              resolve(null)
-              return
-            }
-
-            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) {
-              resolve(null)
-              return
-            }
-
-            placesService.findPlaceFromQuery(
-              {
-                query: location.placesQuery,
-                fields: ['name', 'formatted_address', 'geometry', 'place_id'],
-              },
-              (results, status) => {
-                if (status !== google.maps.places.PlacesServiceStatus.OK || !results?.length) {
-                  reject(new Error(`Place match failed for ${location.id}: ${status}`))
-                  return
-                }
-                resolve(results[0])
-              },
-            )
-          })
-
-        const fetchPlaceDetails = (placeId) =>
-          new Promise((resolve, reject) => {
-            if (!placeId) {
-              resolve(null)
-              return
-            }
-
-            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) {
-              resolve(null)
-              return
-            }
-
-            placesService.getDetails(
-              {
-                placeId,
-                fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
-              },
-              (result, status) => {
-                if (status !== google.maps.places.PlacesServiceStatus.OK || !result) {
-                  reject(new Error(`Place details failed for ${placeId}: ${status}`))
-                  return
-                }
-                resolve(result)
-              },
-            )
-          })
-
-        const fetchDriveProfile = (origin, destination) =>
-          new Promise((resolve, reject) => {
-            if (!origin || !destination) {
-              resolve(null)
-              return
-            }
-
-            if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) {
-              resolve(null)
-              return
-            }
-
-            directionsService.route(
-              {
-                origin,
-                destination,
-                travelMode: google.maps.TravelMode.DRIVING,
-                provideRouteAlternatives: false,
-              },
-              (result, status) => {
-                if (status !== 'OK' || !result?.routes?.length) {
-                  reject(new Error(`Drive profile failed: ${status}`))
-                  return
-                }
-
-                const leg = result.routes[0]?.legs?.[0]
-                resolve(
-                  leg
-                    ? {
-                        distanceText: leg.distance?.text || '',
-                        distanceMeters: leg.distance?.value || 0,
-                        durationText: leg.duration?.text || '',
-                        durationSeconds: leg.duration?.value || 0,
-                      }
-                    : null,
-                )
-              },
-            )
-          })
-
-        for (const location of pendingPlaceLocations) {
-          locationIntelHydrationRef.current.add(location.id)
-
-          try {
-            const matchedPlace = await findPlaceMatch(location)
-            if (cancelled) return
-
-            const coordinates = matchedPlace?.geometry?.location
-              ? {
-                  lat: matchedPlace.geometry.location.lat(),
-                  lng: matchedPlace.geometry.location.lng(),
-                }
-              : location.coordinates
-            const placeId = matchedPlace?.place_id || location.placeId
-            const placeDetails = placeId ? await fetchPlaceDetails(placeId) : null
-            if (cancelled) return
-
-            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo, index) => ({
-              id: `${location.id}-live-photo-${index + 1}`,
-              label: index === 0 ? 'Live venue photo' : `Venue photo ${index + 1}`,
-              imageUrl: photo.getUrl({ maxWidth: 900 }),
-              sourceUrl: placeId ? `https://www.google.com/maps/place/?q=place_id:${placeId}` : location.externalUrl,
-            }))
-
-            let basecampDrive = location.basecampDrive
-            if (location.category === 'meal' && basecampLocation?.coordinates && !basecampDrive) {
-              try {
-                basecampDrive = await fetchDriveProfile(basecampLocation.coordinates, coordinates)
-              } catch {
-                basecampDrive = location.basecampDrive
-              }
-            }
-
-            hydrateLocationDetails(location.id, {
-              title: matchedPlace?.name || location.title,
-              address: matchedPlace?.formatted_address || location.address,
-              coordinates,
-              placeId,
-              externalUrl: placeId ? `https://www.google.com/maps/place/?q=place_id:${placeId}` : location.externalUrl,
-              phoneNumber: placeDetails?.formatted_phone_number || location.phoneNumber,
-              websiteUrl: placeDetails?.website || location.websiteUrl,
-              rating: placeDetails?.rating || location.rating,
-              userRatingsTotal: placeDetails?.user_ratings_total || location.userRatingsTotal,
-              openingHours: placeDetails?.opening_hours?.weekday_text || location.openingHours,
-              livePhotos: livePhotos.length ? livePhotos : location.livePhotos,
-              basecampDrive,
-            })
-          } catch {
-            // Keep fallback meal intel if Google data is unavailable.
-          } finally {
-            locationIntelHydrationRef.current.delete(location.id)
-          }
-        }
-      } catch {
-        // Keep seeded meal data if Google libraries fail to load.
-      }
-    }
-
-    hydrateMealIntel()
-
-    return () => {
-      cancelled = true
-    }
-  }, [doc.locations, hydrateLocationDetails, liveExternalData])
+  // Meal/location intel hydration via Google Places/Directions was removed when
+  // the map migrated to MapLibre+OSRM. The app now relies exclusively on the
+  // static `tripData.js` values (photos, drive times, ratings, opening hours,
+  // phone, website). `hydrateLocationDetails` is preserved as a generic patch
+  // helper for manual edits and future OSRM-based enrichment. `externalUrl`
+  // fields remain as Google Maps search deep links — those work without the
+  // JS API.
 
   useEffect(() => {
     if (!liveExternalData) {
@@ -4921,19 +5159,25 @@ function App() {
   )
 
   return (
-    <AppShell
-      doc={displayDoc}
-      onSetSelectedPage={setSelectedPage}
-      onExport={exportState}
-      onSearchChange={updateSearchQuery}
-      searchResults={searchResults}
-      onOpenEntity={openEntity}
-      families={displayDoc.families}
-      activeFamily={currentFamily}
-      onSetActiveFamily={setActiveFamilyProfile}
-    >
-      {mainWithInspector}
-    </AppShell>
+    <>
+      <AppShell
+        doc={displayDoc}
+        onSetSelectedPage={setSelectedPage}
+        onExport={exportState}
+        onOpenChat={() => setChatOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onSearchChange={updateSearchQuery}
+        searchResults={searchResults}
+        onOpenEntity={openEntity}
+        families={displayDoc.families}
+        activeFamily={currentFamily}
+        onSetActiveFamily={setActiveFamilyProfile}
+      >
+        {mainWithInspector}
+      </AppShell>
+      <ChatDialog open={chatOpen} onClose={() => setChatOpen(false)} />
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </>
   )
 }
 

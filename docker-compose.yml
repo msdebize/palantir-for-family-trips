@@ -4,8 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
-        VITE_GOOGLE_MAP_ID: ${VITE_GOOGLE_MAP_ID:-}
+        VITE_MAP_STYLE_URL: ${VITE_MAP_STYLE_URL:-}
+        VITE_OSRM_BASE: ${VITE_OSRM_BASE:-}
     image: palantir-trips:plim
     container_name: palantir-trips
     restart: unless-stopped

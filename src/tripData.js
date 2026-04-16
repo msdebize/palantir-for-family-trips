@@ -202,6 +202,7 @@ export const INITIAL_FAMILIES = [
   {
     id: 'north-star',
     name: 'Parkers',
+    title: 'Parkers',
     origin: 'Los Angeles',
     shortOrigin: 'LA',
     status: 'Transit',
@@ -209,6 +210,15 @@ export const INITIAL_FAMILIES = [
     driveTime: '5.5 hrs',
     headcount: '2 adults, 1 kid',
     vehicle: 'SUV',
+    vehicles: [
+      {
+        id: 'north-star-1',
+        name: 'Parker SUV',
+        seats: 5,
+        driver: 'Parkers',
+        departureWindow: 'Thu 09:30',
+      },
+    ],
     responsibility: 'Firewood + snacks',
     readiness: 82,
     routeSummary: 'Single-leg drive from LA to Pine Mountain Lake',
@@ -222,6 +232,7 @@ export const INITIAL_FAMILIES = [
   {
     id: 'silver-peak',
     name: 'Jiangs',
+    title: 'Jiangs',
     origin: 'San Francisco',
     shortOrigin: 'SF',
     status: 'Transit',
@@ -229,6 +240,15 @@ export const INITIAL_FAMILIES = [
     driveTime: '3.5 hrs',
     headcount: '2 adults, 1 kid',
     vehicle: 'SUV',
+    vehicles: [
+      {
+        id: 'silver-peak-1',
+        name: 'Jiang SUV',
+        seats: 5,
+        driver: 'Jiangs',
+        departureWindow: 'Thu 11:30',
+      },
+    ],
     responsibility: 'Coolers + breakfast fruit',
     readiness: 88,
     routeSummary: 'Short Bay Area drive with a quick Oakdale reset before Pine Mountain Lake',
@@ -242,6 +262,7 @@ export const INITIAL_FAMILIES = [
   {
     id: 'desert-bloom',
     name: 'Riveras',
+    title: 'Riveras',
     origin: 'Reno',
     shortOrigin: 'RN',
     status: 'Friday Arrival',
@@ -249,6 +270,15 @@ export const INITIAL_FAMILIES = [
     driveTime: '5 hrs',
     headcount: '2 adults, 1 kid',
     vehicle: 'SUV',
+    vehicles: [
+      {
+        id: 'desert-bloom-1',
+        name: 'Rivera SUV',
+        seats: 5,
+        driver: 'Riveras',
+        departureWindow: 'Fri 08:00',
+      },
+    ],
     responsibility: 'Grill kit + Saturday lunch',
     readiness: 71,
     routeSummary: 'Friday arrival from Reno straight into Pine Mountain Lake',
@@ -258,6 +288,32 @@ export const INITIAL_FAMILIES = [
       { id: 'yosemite-daypack', label: 'Yosemite daypacks staged', done: false },
       { id: 'park-pass', label: 'Park entry docs confirmed', done: true },
     ],
+  },
+  {
+    id: 'santos',
+    name: 'Santos',
+    title: 'Santos',
+    origin: 'São Paulo',
+    shortOrigin: 'SP',
+    status: 'Planning',
+    eta: 'Thursday night',
+    driveTime: 'Flight + rental',
+    headcount: '4 adults',
+    vehicle: 'Rental · SUV',
+    vehicles: [
+      {
+        id: 'santos-1',
+        name: 'Rental Tahoe',
+        seats: 5,
+        driver: 'TBD',
+        departureWindow: 'Thu 10:00',
+      },
+    ],
+    responsibility: 'Intl logistics & supplies',
+    readiness: 20,
+    routeSummary: 'International arrival via SFO, rental pickup, drive to Pine Mountain Lake',
+    tasks: [],
+    checklist: [],
   },
 ]
 
