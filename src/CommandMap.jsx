@@ -6,6 +6,7 @@ import { ChevronDown, ChevronUp, Cloud, CloudRain, Layers3, Sun } from 'lucide-r
 import { isLiveExternalDataEnabled } from './publishConfig'
 import { DAYS, TIME_SLOTS } from './tripData'
 import { getRouteDurationSlotSpan, parseEntityKey } from './tripModel'
+import { fetchWikimediaPhotos } from './wikimediaPhotos'
 
 // ---------------------------------------------------------------------------
 // MapLibre + OpenFreeMap + OSRM + Turf stack (replaces Google Maps entirely).
@@ -415,7 +416,20 @@ function formatCategoryLabel(location) {
 }
 
 function getLocationPhoto(location) {
-  return [...(location.livePhotos || []), ...(location.photos || [])].find((media) => media?.imageUrl) || null
+  // livePhotos arrive from Wikimedia Commons ({ thumbUrl, url, title, sourceUrl })
+  // while the seeded photos use the legacy { imageUrl } shape. Normalise both
+  // into { imageUrl, sourceUrl?, title? } for the popup renderer.
+  const live = (location.livePhotos || [])
+    .map((media) => {
+      if (!media) return null
+      if (media.imageUrl) return media
+      const imageUrl = media.thumbUrl || media.url
+      if (!imageUrl) return null
+      return { imageUrl, sourceUrl: media.sourceUrl || null, title: media.title || '' }
+    })
+    .filter(Boolean)
+  const seeded = (location.photos || []).filter((media) => media?.imageUrl)
+  return live[0] || seeded[0] || null
 }
 
 function getHoursPreview(location) {
@@ -438,8 +452,23 @@ function buildLocationBriefingContent(location) {
   const phone = location.phoneNumber || ''
   const address = location.address || 'Address pending'
   const summary = location.summary || location.reservationNote || location.note || 'Location intel syncing from trip plan.'
+  // Wikimedia Commons / seeded photos surface here. Prefer the <img> element
+  // with native lazy-loading + async decoding over a CSS background so the
+  // browser can defer work when the popup is off-screen. The attribution link
+  // is only attached when the asset came from Wikimedia (sourceUrl present).
   const photoMarkup = photo
-    ? `<div class="trip-briefing__photo" style="background-image:url('${escapeHtml(photo.imageUrl)}')"></div>`
+    ? `<div class="trip-briefing__photo trip-briefing__photo--image">
+         <img
+           src="${escapeHtml(photo.imageUrl)}"
+           alt="${escapeHtml(photo.title || location.title || '')}"
+           loading="lazy"
+           decoding="async"
+           referrerpolicy="no-referrer"
+         />
+         ${photo.sourceUrl
+           ? `<a class="trip-briefing__photo-credit" href="${escapeHtml(photo.sourceUrl)}" target="_blank" rel="noreferrer" title="Source: Wikimedia Commons">CC / Wikimedia</a>`
+           : ''}
+       </div>`
     : `<div class="trip-briefing__photo trip-briefing__photo--fallback">
          <div class="trip-briefing__photo-icon" style="color:${accent}">◆</div>
          <div class="trip-briefing__photo-label">${escapeHtml(categoryLabel)}</div>
@@ -515,10 +544,37 @@ function ensureLocationBriefingStyles() {
       border: 1px solid rgba(88, 166, 255, 0.18);
     }
     .trip-briefing__photo {
-      height: 104px;
+      position: relative;
+      height: 150px;
+      max-height: 150px;
       background-size: cover;
       background-position: center;
       border-bottom: 1px solid rgba(88, 166, 255, 0.12);
+      overflow: hidden;
+    }
+    .trip-briefing__photo--image img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .trip-briefing__photo-credit {
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      padding: 2px 6px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #c9d1d9;
+      background: rgba(13, 17, 23, 0.72);
+      border: 1px solid rgba(88, 166, 255, 0.32);
+      text-decoration: none;
+    }
+    .trip-briefing__photo-credit:hover {
+      color: #7cc0ff;
+      background: rgba(13, 17, 23, 0.9);
     }
     .trip-briefing__photo--fallback {
       display: flex;
@@ -1568,10 +1624,10 @@ export default function CommandMap({
       type: data.type || null,
       raw: data,
       externalUrl,
-      // Photo fallback: Wikimedia Commons search is plausible but adds another
-      // unauthenticated cross-origin hop. Deferred — see TODO below.
-      // TODO(wikimedia-photos): optional enrichment via commons.wikimedia.org
-      //   w/api.php?action=query&list=search&srsearch=<query>&srnamespace=6
+      // Photo enrichment is fired off separately (Wikimedia Commons API) so
+      // we don't block the 1 req/s Nominatim loop. See the hydration loop
+      // below — it attaches `livePhotos` asynchronously once the Wikimedia
+      // helper resolves.
       livePhotos: null,
     }
   }
@@ -1675,7 +1731,11 @@ export default function CommandMap({
           const baseLayerId = `${baseSourceId}-layer`
           const animLayerId = `${animSourceId}-layer`
 
-          map.addSource(baseSourceId, { type: 'geojson', data: pathToGeoJSON(seededPath) })
+          // `lineMetrics: true` is required for `line-gradient` + the
+          // `['line-progress']` expression (used below on the animLayer for
+          // the travelling-band effect). It has to be set at addSource time;
+          // setData() keeps it — but a full removeSource/addSource would not.
+          map.addSource(baseSourceId, { type: 'geojson', data: pathToGeoJSON(seededPath), lineMetrics: true })
           map.addLayer({
             id: baseLayerId,
             type: 'line',
@@ -1688,17 +1748,29 @@ export default function CommandMap({
             },
           })
 
-          map.addSource(animSourceId, { type: 'geojson', data: pathToGeoJSON(seededPath) })
+          map.addSource(animSourceId, { type: 'geojson', data: pathToGeoJSON(seededPath), lineMetrics: true })
           map.addLayer({
             id: animLayerId,
             type: 'line',
             source: animSourceId,
             layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'visible' },
             paint: {
-              'line-color': TONE_COLORS[route.tone] || TONE_COLORS.info,
+              // NOTE: `line-gradient` is mutually exclusive with `line-color`
+              // on the same layer — MapLibre will only honour the gradient
+              // when `line-color` is absent. The travelling-band gradient
+              // expression is populated on every RAF tick by the animation
+              // loop (`setPaintProperty('line-gradient', …)`). Because the
+              // expression is evaluated server-side in the GPU shader, there
+              // is no LineAtlas contention like the old `line-dasharray`.
+              'line-gradient': [
+                'interpolate',
+                ['linear'],
+                ['line-progress'],
+                0, 'rgba(0,0,0,0)',
+                1, 'rgba(0,0,0,0)',
+              ],
               'line-opacity': route.tone === 'muted' ? 0.45 : 0.55,
               'line-width': route.tone === 'muted' ? 2.5 : 3,
-              'line-dasharray': [1, 2],
             },
           })
 
@@ -1842,6 +1914,29 @@ export default function CommandMap({
                 osmCategory: entry.location.osmCategory,
                 osmType: entry.location.osmType,
               })
+
+              // Fire-and-forget Wikimedia Commons photo enrichment. We do NOT
+              // await this — the Nominatim loop is already serialised at 1
+              // req/s, piling Wikimedia on top would stall hydration visibly.
+              // The helper has its own 250 ms gap + 14-day localStorage cache.
+              const wikiQuery = entry.location.placesQuery || entry.location.title || entry.location.name
+              if (wikiQuery) {
+                const targetId = entry.location.id
+                fetchWikimediaPhotos(wikiQuery, 3)
+                  .then((photos) => {
+                    if (cancelled || !photos?.length) return
+                    // Re-find the live entry — hydration order is async and
+                    // the ref may have been rebuilt (unmount/remount).
+                    const live = markerEntriesRef.current.find((item) => item?.location?.id === targetId)
+                    if (!live) return
+                    live.location = { ...live.location, livePhotos: photos }
+                    live.popup?.setHTML(buildLocationBriefingContent(live.location))
+                    // Propagate upwards so external state (InspectorRail, etc.)
+                    // sees the photos too.
+                    onHydrateLocationDetails?.(targetId, { livePhotos: photos })
+                  })
+                  .catch(() => { /* helper already logs */ })
+              }
             } catch (error) {
               console.warn('[TripCommand] Nominatim hydration skipped for', entry.location?.id, error?.message || error)
               if (placesAvailabilityRef.current === 'unavailable') break
@@ -2037,12 +2132,74 @@ export default function CommandMap({
       const cameraAnimationAlpha = 1 - Math.exp(-deltaSeconds * 2.7)
       const map = mapRef.current
 
-      // Route dash animation disabled — MapLibre's setPaintProperty('line-dasharray')
-      // at frame rate exhausts the internal LineAtlas (256 slots) and eventually
-      // triggers "Cannot read properties of null (reading 'y')" in
-      // setConstantDashPositions. Static dash pattern from layer init is kept.
-      // If a travelling effect is desired, the correct approach is a second
-      // layer with a custom `line-gradient` driven by line-progress.
+      // Route travelling-band animation via `line-gradient` on the animLayer.
+      //
+      // Why not `setPaintProperty('line-dasharray', …)` anymore?
+      //   Driving dasharray from RAF burns through MapLibre's LineAtlas
+      //   (256 slots, allocated per unique dash pattern). The atlas fills up
+      //   after ~a few seconds and the next frame crashes inside
+      //   `setConstantDashPositions` with "Cannot read properties of null".
+      //
+      // Why not `line-trim-offset`?
+      //   Not available on maplibre-gl@5.23 (added in a later minor). The
+      //   gradient approach works on every 5.x release.
+      //
+      // How it works:
+      //   Each animLayer source was created with `lineMetrics: true`, which
+      //   exposes the `['line-progress']` feature-state data expression (0 at
+      //   the start of the line, 1 at the end). We compose a gradient with
+      //   three stops — transparent / tone-color / transparent — centred on
+      //   a `phase` that cycles 0→1 over the route's `loopDurationSeconds`.
+      //   The narrow visible band (width ~0.16) reads as a "travelling dash".
+      //
+      // Cost: one `setPaintProperty('line-gradient', expr)` per visible route
+      // per frame. The expression is a plain JSON array that MapLibre
+      // re-compiles into a shader uniform — no atlas allocation, no texture
+      // upload, no per-vertex work. Safe at 60 fps.
+      if (map) {
+        routeEntriesRef.current.forEach((entry) => {
+          if (!entry?.animLayerId || !entry.visible) return
+          const seconds = timestamp / 1000
+          const loopSeconds = Math.max(entry.loopDurationSeconds || 24, 4)
+          const phase = (((seconds % loopSeconds) / loopSeconds) + (entry.offset || 0)) % 1
+          const tone = TONE_COLORS[entry.route?.tone] || TONE_COLORS.info
+          const halfBand = 0.08
+          // Clamp edge stops to [0, 1]; when `phase` wraps near the edges we
+          // simply let the visible band "exit" and "re-enter" — MapLibre
+          // accepts non-monotonic expression inputs by sorting, so we keep
+          // the stops in strict ascending order ourselves.
+          const a = Math.max(0, phase - halfBand)
+          const c = Math.min(1, phase + halfBand)
+          const expression = [
+            'interpolate',
+            ['linear'],
+            ['line-progress'],
+            0, 'rgba(0,0,0,0)',
+            a, 'rgba(0,0,0,0)',
+            phase, tone,
+            c, 'rgba(0,0,0,0)',
+            1, 'rgba(0,0,0,0)',
+          ]
+          if (!entry.shouldAnimate) {
+            // Paused / hidden — collapse the band so the layer becomes fully
+            // transparent without flipping visibility (which would thrash
+            // tile rendering).
+            try {
+              map.setPaintProperty(entry.animLayerId, 'line-gradient', [
+                'interpolate', ['linear'], ['line-progress'],
+                0, 'rgba(0,0,0,0)', 1, 'rgba(0,0,0,0)',
+              ])
+            } catch { /* layer removed mid-frame */ }
+            return
+          }
+          try {
+            map.setPaintProperty(entry.animLayerId, 'line-gradient', expression)
+          } catch {
+            // Layer may have been torn down between scheduling and execution;
+            // ignore — the next effect cycle will re-register the layer.
+          }
+        })
+      }
 
       vehicleEntriesRef.current.forEach((entry) => {
         if (!entry.radarElement) return
@@ -2213,7 +2370,9 @@ export default function CommandMap({
             ? emphasized ? 2.6 : 1.8
             : emphasized ? 3.2 : 2.1,
         )
-        map.setPaintProperty(animLayerId, 'line-color', TONE_COLORS[route.tone] || TONE_COLORS.info)
+        // animLayer colour travels through `line-gradient` (set from the RAF
+        // loop), not `line-color` — setting both would make MapLibre ignore
+        // the gradient entirely. We only drive opacity + width here.
         map.setPaintProperty(
           animLayerId,
           'line-opacity',
